@@ -8,6 +8,17 @@ from difflib import SequenceMatcher
 from typing import List
 
 
+# Вопросы для точного разбиения
+QUESTION_PATTERNS = [
+    r"1[.)]\s*как вы её воспринимаете, оцениваете, переживаете и преодолеваете[^(]*",
+    r"2[.)]\s*каковы ваши цели в этой ситуации",
+    r"3[.)]\s*какие возможности и ограничения есть у вас при достижении цели",
+    r"4[.)]\s*нужна ли вам в этой ситуации помощь \(поддержка\) окружающих людей",
+    r"5[.)]\s*если всё сложится очень плохо, то что это будет[?] \(максимальный неуспех\)",
+    r"6[.)]\s*опишите, что для вас будет максимально успешным выходом, разрешением ситуации\."
+]
+
+
 def map_token_positions(a: List[str], b: List[str]) -> List[int]:
     """
     Для двух списков токенов a и b возвращает список длины len(a)+1,
@@ -38,16 +49,47 @@ def map_token_positions(a: List[str], b: List[str]) -> List[int]:
 
     return mapping
 
+def detect_text_mismatch(ref_words, test_words, threshold=0.8):
+    """
+    Определяет, есть ли значительное несоответствие между текстами.
+    Возвращает True, если тексты слишком сильно отличаются.
+    """
+    return ref_words != test_words
 
-# Вопросы для точного разбиения
-QUESTION_PATTERNS = [
-    r"1[.)]\s*как вы её воспринимаете, оцениваете, переживаете и преодолеваете[^(]*",
-    r"2[.)]\s*каковы ваши цели в этой ситуации",
-    r"3[.)]\s*какие возможности и ограничения есть у вас при достижении цели",
-    r"4[.)]\s*нужна ли вам в этой ситуации помощь \(поддержка\) окружающих людей",
-    r"5[.)]\s*если всё сложится очень плохо, то что это будет[?] \(максимальный неуспех\)",
-    r"6[.)]\s*опишите, что для вас будет максимально успешным выходом, разрешением ситуации\."
-]
+
+def format_text_mismatch_error(situation_title, block_num, ref_words, test_words):
+    """
+    Форматирует сообщение об ошибке сопоставления текстов
+    """
+    block_names = ["Ситуация", "Вопрос 1", "Вопрос 2", "Вопрос 3", "Вопрос 4", "Вопрос 5", "Вопрос 6"]
+    block_name = block_names[block_num] if block_num < len(block_names) else f"Блок {block_num}"
+    
+    sm = SequenceMatcher(None, ref_words, test_words)
+    similarity = sm.ratio()
+
+    first_diff = next((i for i, (a, b) in enumerate(zip(ref_words, test_words)) if a != b), None)
+    #выводим 10 слов перед и после различия
+    if first_diff is not None:
+        start = max(0, first_diff - 5)
+        end_ref = min(len(ref_words), first_diff + 10)
+        end_test = min(len(test_words), first_diff + 10)
+        ref_context = ' '.join(ref_words[start:end_ref])
+        test_context = ' '.join(test_words[start:end_test])
+        if start > 0:
+            ref_context = '...' + ref_context
+            test_context = '...' + test_context
+        if end_ref < len(ref_words):
+            ref_context += '...'
+        if end_test < len(test_words):
+            test_context += '...'
+    else:
+        ref_context = ' '.join(ref_words)
+        test_context = ' '.join(test_words)
+    
+    return f"ОШИБКА СОПОСТАВЛЕНИЯ: Ситуация '{situation_title}', {block_name}. Различие: {1-similarity:.1%}\n" \
+              f"  Эталон: '{ref_context}'\n" \
+              f"  Тест:   '{test_context}'\n" \
+
 
 
 def map_eng(text):
@@ -173,11 +215,15 @@ def add_many_dicts(d1, *dicts):
 
 
 def compare_positions(ref_map, test_map, ref_block, test_block):
-    """Сравнивает позиции в двух списках. Возвращает True, если совпадают."""
-    ref_block = re.sub(code_pattern, "", ref_block)
-    test_block = re.sub(code_pattern, "", test_block)
-    ref_words = re.findall(word_pattern, ref_block)
-    test_words = re.findall(word_pattern, test_block)
+    """Сравнивает позиции в двух списках. Возвращает статистику и информацию о несоответствии текстов."""
+    ref_block_clean = re.sub(code_pattern, "", ref_block)
+    test_block_clean = re.sub(code_pattern, "", test_block)
+    ref_words = re.findall(word_pattern, ref_block_clean)
+    test_words = re.findall(word_pattern, test_block_clean)
+    
+    # Проверяем несоответствие текстов
+    text_mismatch = detect_text_mismatch(ref_words, test_words)
+    
     pos_map = map_token_positions(ref_words, test_words)
     pos_map.append(len(test_words)+1)
     #print(f'{pos_map = }')
@@ -263,7 +309,16 @@ def compare_positions(ref_map, test_map, ref_block, test_block):
     wstats = {'missing': total_w_missing, 'extra': total_w_extra, 'misplaced': total_w_misplaced,
               'correct': total_w_correct, 'duplicates': total_w_duplicates, 'total': ncodes, 'total_ref': len(ref_map), 'total_test': len(test_map)}
     errors = {'missing': missing, 'extra': extra, 'misplaced': misplaced, 'correct': correct, 'duplicates': duplicates}
-    return stats, cstats, wstats, errors
+    
+    # Возвращаем также информацию о несоответствии текстов
+    text_mismatch_info = None
+    if text_mismatch:
+        text_mismatch_info = {
+            'ref_words': ref_words,
+            'test_words': test_words
+        }
+    
+    return stats, cstats, wstats, errors, text_mismatch_info
 
 
 def print_stats(stats, title="Statistics", format="10", normalize='total'):
@@ -276,23 +331,36 @@ def print_stats(stats, title="Statistics", format="10", normalize='total'):
     print(f"   {normalize[0].upper()}{normalize[1:]}:      {stats[normalize]:{format}}\n")
 
 
-def compare_markups(ref_text, test_text):
+def compare_markups(ref_text, test_text, ignore_text_errors=False, situation_title=""):
     stats = {}
     cstats = {}
     wstats = {}
     errors = []
+    text_mismatch_errors = []
+    
     ref, ref_blocks = parse_markup(ref_text)
     test, test_blocks = parse_markup(test_text)
     ref_map = map_code_locations(ref)
     test_map = map_code_locations(test)
-    for rr, tt, rb, tb in zip(ref_map, test_map, ref_blocks, test_blocks):
-        stats_, cstats_, wstats_, errors_ = compare_positions(rr, tt, rb, tb)
+    
+    for block_num, (rr, tt, rb, tb) in enumerate(zip(ref_map, test_map, ref_blocks, test_blocks)):
+        stats_, cstats_, wstats_, errors_, text_mismatch_info = compare_positions(rr, tt, rb, tb)
         stats = add_dicts(stats, stats_)
         cstats = add_dicts(cstats, cstats_)
         wstats = add_dicts(wstats, wstats_)
         errors.append(errors_)
+        
+        # Сохраняем информацию об ошибках сопоставления текстов
+        if text_mismatch_info and not ignore_text_errors:
+            error_msg = format_text_mismatch_error(
+                situation_title, 
+                block_num, 
+                text_mismatch_info['ref_words'], 
+                text_mismatch_info['test_words']
+            )
+            text_mismatch_errors.append(error_msg)
 
-    return stats, cstats, wstats, errors
+    return stats, cstats, wstats, errors, text_mismatch_errors
 
 
 def read_categories():
@@ -443,8 +511,8 @@ def read_categories():
     ["3B10", "Другое (ограничения)"],
     ["4A", "НЕОБХОДИМОСТЬ ПОМОЩИ"],
     ["4A1", "Нет необходимости"],
-    ["4A2", "Сомнения в ее возможности"],
-    ["4A3", "Уверенность в ее необходимости"],
+    ["4A2", "Сомнения в её возможности"],
+    ["4A3", "Уверенность в её необходимости"],
     ["4A4", "Нужна при определенных условиях"],
     ["4A5", "Необязательность помощи"],
     ["4A6", "Другое (необходимость помощи)"],
@@ -680,7 +748,7 @@ def generate_html(test_text, stats, cstats, wstats, errors, normalize='total', e
         #print(f'{words = }')
         word_end_map = [0] + [m.end() for m in words_pos] + [len(block)]
         if any(pos >= len(word_end_map) for pos, codes in wrap_map.items()):
-            print(f'{errs = }\n-----\n{words = }\n{len(words) = }\n{wrap_map = }')
+            print(f'errs = {errs}\n-----\nwords = {words}\nlen(words) = {len(words)}\nwrap_map = {wrap_map}')
             raise ValueError("Позиция слова выходит за пределы текста")
         insert_map = {word_end_map[pos]: " " + ", ".join([wrap_code(code, cls) for code, cls in codes]) for pos, codes
                       in wrap_map.items()}
@@ -700,7 +768,7 @@ def test():
     cat_desc = categories_descr
     ref_text = open('reference.txt', encoding='utf-8').read()
     test_text = open('test.txt', encoding='utf-8').read()
-    stats, cstats, wstats, errors = compare_markups(ref_text, test_text)
+    stats, cstats, wstats, errors, text_mismatch_errors = compare_markups(ref_text, test_text, ignore_text_errors=True)
     print_stats(stats, "Статистика случаев")
     print_stats(cstats, "Статистика вхождений")
     print_stats(wstats, "Взвешенная статистика вхождений", "10.2f")
@@ -723,12 +791,13 @@ def test():
             print(f'   {i}: ', e['code'], e['found'], "\t// ", cat_desc[e['code']])
 
 
-def generate_multi_situation_report(situations_dict, reference_dict, normalize='total', efficiency_config=None):
+def generate_multi_situation_report(situations_dict, reference_dict, normalize='total', efficiency_config=None, ignore_text_errors=False):
     """
     Создает HTML-отчет для нескольких ситуаций с общей сводкой и детализацией
 
     :param situations_dict: словарь {название: разметка_ситуации}
     :param reference_dict: словарь {название: эталонная_разметка}
+    :param ignore_text_errors: не выводить ошибки сопоставления текстов
     :return: строка -- HTML-код отчета
     """
     efficiency_config = efficiency_config or {}
@@ -737,6 +806,7 @@ def generate_multi_situation_report(situations_dict, reference_dict, normalize='
     all_stats = {}
     all_cstats = {}
     all_wstats = {}
+    all_text_errors = []
 
     not_in_reference = []
     for title, test_text in situations_dict.items():
@@ -745,7 +815,16 @@ def generate_multi_situation_report(situations_dict, reference_dict, normalize='
             not_in_reference.append(title)
             continue
         reference_text = reference_dict.get(title)
-        stats, cstats, wstats, errors = compare_markups(reference_text, test_text)
+        stats, cstats, wstats, errors, text_mismatch_errors = compare_markups(
+            reference_text, test_text, ignore_text_errors, title
+        )
+        
+        # Выводим ошибки сопоставления текстов на экран
+        if text_mismatch_errors and not ignore_text_errors:
+            for error_msg in text_mismatch_errors:
+                print(error_msg)
+            all_text_errors.extend(text_mismatch_errors)
+        
         situation_results[title] = {
             'stats': stats,
             'cstats': cstats,
@@ -758,6 +837,10 @@ def generate_multi_situation_report(situations_dict, reference_dict, normalize='
         all_stats = add_dicts(all_stats, stats) if all_stats else stats.copy()
         all_cstats = add_dicts(all_cstats, cstats) if all_cstats else cstats.copy()
         all_wstats = add_dicts(all_wstats, wstats) if all_wstats else wstats.copy()
+
+    # Выводим итоговое сообщение об ошибках сопоставления
+    if all_text_errors and not ignore_text_errors:
+        print(f"\n=== ИТОГО НАЙДЕНО {len(all_text_errors)} ОШИБОК СОПОСТАВЛЕНИЯ ТЕКСТОВ ===\n")
 
     if not situation_results:
         print("Нет ситуаций для анализа.")
@@ -1072,7 +1155,7 @@ def generate_multi_situation_report(situations_dict, reference_dict, normalize='
     return "\n".join(html_parts)
 
 
-def generate_multi_situation_report_text(situations_dict, reference_dict):
+def generate_multi_situation_report_text(situations_dict, reference_dict, ignore_text_errors=False):
     """
     Создает HTML-отчет для нескольких ситуаций с общей сводкой и детализацией
 
@@ -1093,7 +1176,9 @@ def generate_multi_situation_report_text(situations_dict, reference_dict):
             not_in_reference.append(title)
             continue
         reference_text = reference_dict.get(title)
-        stats, cstats, wstats, errors = compare_markups(reference_text, test_text)
+        stats, cstats, wstats, errors, text_mismatch_errors = compare_markups(
+            reference_text, test_text, ignore_text_errors=True, situation_title=title
+        )
         situation_results[title] = {
             'stats': stats,
             'cstats': cstats,
@@ -1286,6 +1371,12 @@ def main():
         type=str
     )
 
+    parser.add_argument(
+        '--ignore-errors',
+        help='Не выводить ошибки сопоставления текстов между эталоном и тестируемой разметкой',
+        action='store_true'
+    )
+
     args = parser.parse_args()
 
     try:
@@ -1322,12 +1413,13 @@ def main():
     # Генерация отчетов
     if args.text_only or args.both:
         print("\nГенерация текстового отчета:")
-        text_report = generate_multi_situation_report_text(test_text, ref_text)
+        text_report = generate_multi_situation_report_text(test_text, ref_text, args.ignore_errors)
         print(text_report)
 
     if not args.text_only or args.both:
         print("\nГенерация HTML-отчета...")
-        html_report = generate_multi_situation_report(test_text, ref_text, efficiency_config=efficiency_config, normalize=normalize)
+        html_report = generate_multi_situation_report(test_text, ref_text, efficiency_config=efficiency_config,
+                                                      normalize=normalize, ignore_text_errors=args.ignore_errors)
         with open(args.output, 'w', encoding='utf-8') as f:
             f.write(html_report)
         print(f"HTML-отчет сохранен в: {args.output}")
@@ -1337,3 +1429,4 @@ def main():
 
 if __name__ == "__main__":
     exit(main())
+
