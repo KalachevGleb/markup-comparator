@@ -231,6 +231,8 @@ def compare_positions(ref_map, test_map, ref_block, test_block):
     # print(f'{extra = }')
     # print(f'{misplaced = }')
     ntotal = sum(numcases_by_code.values())
+    ntotal_ref = sum(len(v) for v in ref_map.values())
+    ntotal_test = sum(len(v) for v in test_map.values())
 
     total_duplicates = sum(len(d['found']) for d in duplicates)
     total_missing = sum(len(d['expected']) for d in missing)
@@ -252,23 +254,26 @@ def compare_positions(ref_map, test_map, ref_block, test_block):
 
     stats = {'missing': len(missing), 'extra': len(extra), 'misplaced': len(misplaced), 'correct': len(correct),
              'duplicates': len(duplicates),
-             'total': len(missing) + len(extra) + len(misplaced) + len(correct) + len(duplicates)}
+             'total': len(missing) + len(extra) + len(misplaced) + len(correct) + len(duplicates),
+             'total_ref': len(ref_map), 
+             'total_test': len(test_map),}
     cstats = {'missing': total_missing, 'extra': total_extra, 'misplaced': total_misplaced, 'correct': total_correct,
-              'duplicates': total_duplicates, 'total': ntotal}
+              'duplicates': total_duplicates, 'total': ntotal,
+              'total_ref': ntotal_ref, 'total_test': ntotal_test}
     wstats = {'missing': total_w_missing, 'extra': total_w_extra, 'misplaced': total_w_misplaced,
-              'correct': total_w_correct, 'duplicates': total_w_duplicates, 'total': ncodes}
+              'correct': total_w_correct, 'duplicates': total_w_duplicates, 'total': ncodes, 'total_ref': len(ref_map), 'total_test': len(test_map)}
     errors = {'missing': missing, 'extra': extra, 'misplaced': misplaced, 'correct': correct, 'duplicates': duplicates}
     return stats, cstats, wstats, errors
 
 
-def print_stats(stats, title="Statistics", format="10"):
+def print_stats(stats, title="Statistics", format="10", normalize='total'):
     print(f"{title}")
-    print(f"   Missing:    {stats['missing']:{format}} ({stats['missing'] / stats['total']:6.2%})")
-    print(f"   Extra:      {stats['extra']:{format}} ({stats['extra'] / stats['total']:6.2%})")
-    print(f"   Duplicates: {stats['duplicates']:{format}} ({stats['duplicates'] / stats['total']:6.2%})")
-    print(f"   Misplaced:  {stats['misplaced']:{format}} ({stats['misplaced'] / stats['total']:6.2%})")
-    print(f"   Correct:    {stats['correct']:{format}} ({stats['correct'] / stats['total']:6.2%})")
-    print(f"   Total:      {stats['total']:{format}}\n")
+    print(f"   Missing:    {stats['missing']:{format}} ({stats['missing'] / stats[normalize]:6.2%})")
+    print(f"   Extra:      {stats['extra']:{format}} ({stats['extra'] / stats[normalize]:6.2%})")
+    print(f"   Duplicates: {stats['duplicates']:{format}} ({stats['duplicates'] / stats[normalize]:6.2%})")
+    print(f"   Misplaced:  {stats['misplaced']:{format}} ({stats['misplaced'] / stats[normalize]:6.2%})")
+    print(f"   Correct:    {stats['correct']:{format}} ({stats['correct'] / stats[normalize]:6.2%})")
+    print(f"   {normalize[0].upper()}{normalize[1:]}:      {stats[normalize]:{format}}\n")
 
 
 def compare_markups(ref_text, test_text):
@@ -503,7 +508,7 @@ def insert_substrings(x: str, inserts: dict) -> str:
     return ''.join(result)
 
 
-def generate_html(test_text, stats, cstats, wstats, errors):
+def generate_html(test_text, stats, cstats, wstats, errors, normalize='total', efficiency_config=None):
     """
     test_text — ваш тестовый текст целиком.
     stats — dict со «случаями» ошибок, как возвращает compare_markups.
@@ -511,6 +516,7 @@ def generate_html(test_text, stats, cstats, wstats, errors):
     errors — список из 7 элементов (для q0–q6),
              каждый элемент содержит dict с keys: missing, extra, misplaced, duplicates, correct.
     """
+    efficiency_config = efficiency_config or defaultdict(lambda: 1.0)
     # 1) Цвета
     COLORS = {
         'correct': '#88ff88',  # светло-зелёный
@@ -521,24 +527,6 @@ def generate_html(test_text, stats, cstats, wstats, errors):
         'missing': '#88ffff'  # светло-бирюзовый
     }
     categories = categories_descr
-
-    def make_summary_table(d, title):
-        rows = []
-        for kind in ('missing', 'extra', 'duplicates', 'misplaced', 'correct'):
-            rows.append(
-                f"<tr><td>{kind}</td>"
-                f"<td style='text-align:right'>{d[kind]}</td>"
-                f"<td style='text-align:right'>{d.get(kind + '_entries', d[kind])}</td>"
-                "</tr>"
-            )
-        table = (
-                f"<h2>{title}</h2>"
-                "<table border='1' cellpadding='4' cellspacing='0'>"
-                "<tr><th>Тип ошибки</th><th>Случаев</th><th>Вхождений</th></tr>"
-                + "".join(rows) +
-                "</table>"
-        )
-        return table
 
     # Добавим «_entries» в stats, взяв их из cstats
     for k in cstats:
@@ -581,24 +569,40 @@ def generate_html(test_text, stats, cstats, wstats, errors):
 
     # Сводная таблица
     html_parts.append('<h2>Сводная статистика</h2><table><tr>'
-                      '<th>Тип</th>'
+                      '<th>Тип</th>'+ (
                       '<th>Случаев</th>'
-                      '<th>Случаев (%)</th>'
+                      '<th>Случаев (%)</th>' if normalize == 'total' else '') +
                       '<th>Вхождений</th>'
                       '<th>Вхождений (%)</th>'
                       '<th>Взвешенных вхождений</th>'
                       '<th>Взвешенных вхождений (%)</th>'
                       '</tr>'
                       )
-    for kind in ['missing', 'extra', 'duplicates', 'misplaced', 'correct', 'total']:
-        html_parts.append(f"<tr><td>{kind}</td>"
-                          f"<td align='right'>{stats.get(kind, 0)}</td>"
-                          f"<td align='right'>{stats.get(kind, 0) / stats['total']:.1%}</td>"
-                          f"<td align='right'>{cstats.get(kind, 0)}</td>"
-                          f"<td align='right'>{cstats.get(kind, 0) / cstats['total']:.1%}</td>"
-                          f"<td align='right'>{wstats.get(kind, 0):.2f}</td>"
-                          f"<td align='right'>{wstats.get(kind, 0) / wstats['total']:.1%}</td>"
-                          f"</tr>")
+    ru_kind = {
+        'correct': 'Верные',
+        'extra': 'Лишние',
+        'misplaced': 'Смещённые',
+        'duplicates': 'Дубликаты',
+        'missing': 'Пропущенные',
+        normalize: 'Всего'
+    }
+    for kind in ['correct', 'misplaced', 'duplicates', 'extra', 'missing', normalize]:
+        extra = (kind == 'extra' or kind == 'duplicates') and normalize == 'total_ref'
+        plus = '+' if extra else ''
+        color = ' style=\"color:#C00\"' if extra and normalize == 'total_ref' else ''
+        html_parts.append(
+            f"<tr><td>{ru_kind[kind]}</td>"
+            + (
+                f"<td align='right'>{stats.get(kind, 0)}</td>"
+                f"<td align='right'{color}>{stats.get(kind, 0) / stats[normalize]:.1%}</td>"
+                if normalize == 'total' else ''
+            )
+            + f"<td align='right'>{cstats.get(kind, 0)}</td>"
+            + f"<td align='right'{color}>{plus}{cstats.get(kind, 0) / cstats[normalize]:.1%}</td>"
+            + f"<td align='right'>{wstats.get(kind, 0):.2f}</td>"
+            + f"<td align='right'{color}>{plus}{wstats.get(kind, 0) / wstats[normalize]:.1%}</td>"
+            + f"</tr>"
+        )
     html_parts.append('</table>')
     # 2) Разбить тестовый текст на 7 блоков
     parts = split_by_questions(test_text)
@@ -719,7 +723,7 @@ def test():
             print(f'   {i}: ', e['code'], e['found'], "\t// ", cat_desc[e['code']])
 
 
-def generate_multi_situation_report(situations_dict, reference_dict):
+def generate_multi_situation_report(situations_dict, reference_dict, normalize='total', efficiency_config=None):
     """
     Создает HTML-отчет для нескольких ситуаций с общей сводкой и детализацией
 
@@ -727,6 +731,7 @@ def generate_multi_situation_report(situations_dict, reference_dict):
     :param reference_dict: словарь {название: эталонная_разметка}
     :return: строка -- HTML-код отчета
     """
+    efficiency_config = efficiency_config or {}
     # Собираем статистику по всем ситуациям
     situation_results = {}
     all_stats = {}
@@ -872,19 +877,13 @@ def generate_multi_situation_report(situations_dict, reference_dict):
         'пропущенные': '#88ffff'  # светло-бирюзовый
     }
 
-    # html_parts.append('<div class="legend">')
-    # for kind, color in COLORS.items():
-    #     html_parts.append(
-    #         f'<div class="legend-item"><div class="legend-color" style="background:{color}"></div><span>{kind}</span></div>')
-    # html_parts.append('</div>')
-
     # Общая сводная таблица с переключателями
     html_parts.extend([
         '<section id="summary">',
         '<h2>Общая сводка</h2>',
-        '<div class="tab-buttons">',
-        '<button id="btn-cases" class="tab-button active" onclick="switchTab(\'cases\')">Случаи</button>',
-        '<button id="btn-entries" class="tab-button" onclick="switchTab(\'entries\')">Вхождения</button>',
+        '<div class="tab-buttons">'] + ([
+        '<button id="btn-cases" class="tab-button" onclick="switchTab(\'cases\')">Случаи</button>'] if normalize == 'total' else []) + [
+        '<button id="btn-entries" class="tab-button active" onclick="switchTab(\'entries\')">Вхождения</button>',
         '<button id="btn-weighted" class="tab-button" onclick="switchTab(\'weighted\')">Взвешенные вхождения</button>',
         '</div>'
     ])
@@ -895,11 +894,21 @@ def generate_multi_situation_report(situations_dict, reference_dict):
         'entries': ('Вхождения', all_cstats),
         'weighted': ('Взвешенные вхождения', all_wstats)
     }
+    if normalize != 'total':
+        del stat_types['cases']
 
+    correct_cost = efficiency_config.get('correct', 0.0)
+    misplaced_cost = efficiency_config.get('misplaced', 0.2)
+    duplicates_cost = efficiency_config.get('duplicates', 0.3)
+    extra_cost = efficiency_config.get('extra', 0.5)
+    missing_cost = efficiency_config.get('missing', 1.0)
+    error_cost = correct_cost*all_cstats['correct'] + misplaced_cost*all_cstats['misplaced'] + \
+        duplicates_cost*all_cstats['duplicates'] + extra_cost*all_cstats['extra'] + missing_cost*all_cstats['missing']
+    efficiency = 1 - error_cost/all_cstats['total_ref']
     #print(f'{stat_types = }')
 
     for tab_id, (tab_name, stats) in stat_types.items():
-        active_class = 'active' if tab_id == 'cases' else ''
+        active_class = 'active' if tab_id == 'entries' else ''
         html_parts.extend([
             f'<div id="tab-{tab_id}" class="tab-content {active_class}">',
             f'<h3>Общая статистика по всем ситуациям ({tab_name.lower()})</h3>',
@@ -907,20 +916,20 @@ def generate_multi_situation_report(situations_dict, reference_dict):
             '<tr><th>Тип</th><th>Количество</th><th>Процент</th></tr>'
         ])
 
-        for kind in ['correct', 'misplaced', 'duplicates', 'extra', 'missing', 'total']:
+        for kind in ['correct', 'misplaced', 'duplicates', 'extra', 'missing', normalize]:
             ru_kind = {
                 'correct': 'Верные',
                 'extra': 'Лишние',
                 'misplaced': 'Смещённые',
                 'duplicates': 'Дубликаты',
                 'missing': 'Пропущенные',
-                'total': 'Всего'
+                normalize: 'Всего'
             }.get(kind, kind)
 
             value = stats.get(kind, 0)
             #print(f'{stats = }')
 
-            percent = value / stats['total'] if stats['total'] > 0 and kind != 'total' else 1.0
+            percent = value / stats[normalize] if stats[normalize] > 0 and kind != normalize else 1.0
 
             # Форматирование числовых значений
             if tab_id == 'weighted':
@@ -928,18 +937,27 @@ def generate_multi_situation_report(situations_dict, reference_dict):
             else:
                 value_str = str(value)
 
+            extra = (kind == 'extra' or kind == 'duplicates') and normalize == 'total_ref'
+            plus = '+' if extra else ''
+            color = ' style=\"color:#C00\"' if extra and normalize == 'total_ref' else ''
+
             html_parts.append(
                 f"<tr><td>{ru_kind}</td>"
                 f"<td align='right'>{value_str}</td>"
-                f"<td align='right'>{percent:.1%}</td>"
+                f"<td align='right'{color}>{plus}{percent:.1%}</td>"
                 f"</tr>"
             )
 
         html_parts.append('</table></div>')
 
+    # Добавим строку с эффективностью
+    html_parts.append(
+        f'<p>Эффективность разметки: <strong>{efficiency:.0%}</strong> (стоимость ошибок: {error_cost:.2f}, кодов в эталонной разметке: {all_cstats["total_ref"]} )</p>'
+    )
+
     # Таблица сравнения ситуаций для каждого типа статистики
     for tab_id, (tab_name, _) in stat_types.items():
-        active_class = 'active' if tab_id == 'cases' else ''
+        active_class = 'active' if tab_id == 'entries' else ''
         html_parts.extend([
             f'<div id="tab-compare-{tab_id}" class="tab-content {active_class}">',
             f'<h3>Сравнительная таблица ситуаций ({tab_name.lower()})</h3>',
@@ -950,6 +968,7 @@ def generate_multi_situation_report(situations_dict, reference_dict):
             '<th>Дубликатов</th>'
             '<th>Лишних</th>'
             '<th>Пропущенных</th>'
+            '<th>Эффективность</th>'
             '</tr>'
         ])
 
@@ -966,15 +985,30 @@ def generate_multi_situation_report(situations_dict, reference_dict):
             format_val = lambda v: f'{v:.1%}'
             #else:
             #    format_val = lambda v: str(v)
+            ccstats = result['cstats']
+            case_error_cost = (
+                correct_cost * ccstats['correct'] +
+                misplaced_cost * ccstats['misplaced'] +
+                duplicates_cost * ccstats['duplicates'] +
+                extra_cost * ccstats['extra'] +
+                missing_cost * ccstats['missing']
+            )
+            efficiency = 1 - case_error_cost / ccstats['total_ref'] if ccstats['total_ref'] > 0 else 0
 
-            stats_percent = {k : v / stats['total'] for k, v in stats.items() if k != 'total'}
+            stats_percent = {k : v / stats[normalize] for k, v in stats.items() if k != normalize}
+
+            extra = normalize == 'total_ref'
+            plus = '+' if extra else ''
+            color = ' style=\"color:#C00\"' if extra and normalize == 'total_ref' else ''
+
             html_parts.append(
                 f"<tr><td><a href='#situation-{make_safe_id(title)}'>{title}</a></td>"
                 f"<td align='right'>{format_val(stats_percent.get('correct', 0))}</td>"
                 f"<td align='right'>{format_val(stats_percent.get('misplaced', 0))}</td>"
-                f"<td align='right'>{format_val(stats_percent.get('duplicates', 0))}</td>"
-                f"<td align='right'>{format_val(stats_percent.get('extra', 0))}</td>"
+                f"<td align='right'{color}>{plus}{format_val(stats_percent.get('duplicates', 0))}</td>"
+                f"<td align='right'{color}>{plus}{format_val(stats_percent.get('extra', 0))}</td>"
                 f"<td align='right'>{format_val(stats_percent.get('missing', 0))}</td>"
+                f"<td align='right'>{efficiency:.0%}</td>"
                 f"</tr>"
             )
 
@@ -1020,7 +1054,9 @@ def generate_multi_situation_report(situations_dict, reference_dict):
             result['stats'],
             result['cstats'],
             result['wstats'],
-            result['errors']
+            result['errors'],
+            efficiency_config=efficiency_config,
+            normalize=normalize
         )
 
         # Извлекаем только содержимое body без заголовков
@@ -1235,7 +1271,31 @@ def main():
         action='store_true'
     )
 
+    parser.add_argument(
+        '--efficiency-config',
+        help='Путь к файлу с конфигурацией эффективности (JSON)',
+        default='efficiency_config.json',
+        type=str
+    )
+
+    parser.add_argument(
+        '--normalize',
+        help='Способ нормализации статистики: "total" (по всем случаям), "ref" (по случаям из эталона), "test" (по случаям из тестируемой разметки)',
+        choices=['total', 'ref', 'test'],
+        default='ref',
+        type=str
+    )
+
     args = parser.parse_args()
+
+    try:
+        efficiency_config = json.load(open(args.efficiency_config, 'r', encoding='utf-8'))
+    except json.JSONDecodeError as e:
+        print(f"Ошибка чтения файла конфигурации эффективности: {e}")
+        return 1
+    except FileNotFoundError:
+        print(f"Ошибка: Файл с конфигурацией эффективности '{args.efficiency_config}' не найден. Используется конфигурация по умолчанию.")
+        efficiency_config = None
 
     # Проверка существования входных файлов
     if not os.path.exists(args.reference):
@@ -1255,6 +1315,10 @@ def main():
     test_text = read_situations_from_file(args.filename)
     print(f"Загружено {len(test_text)} тестируемых ситуаций")
 
+    normalize = {'total': 'total',
+                 'ref': 'total_ref',
+                 'test': 'total_test'}[args.normalize]
+
     # Генерация отчетов
     if args.text_only or args.both:
         print("\nГенерация текстового отчета:")
@@ -1263,7 +1327,7 @@ def main():
 
     if not args.text_only or args.both:
         print("\nГенерация HTML-отчета...")
-        html_report = generate_multi_situation_report(test_text, ref_text)
+        html_report = generate_multi_situation_report(test_text, ref_text, efficiency_config=efficiency_config, normalize=normalize)
         with open(args.output, 'w', encoding='utf-8') as f:
             f.write(html_report)
         print(f"HTML-отчет сохранен в: {args.output}")

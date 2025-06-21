@@ -1,0 +1,7 @@
+{
+    "correct": 0.0,
+    "misplaced": 0.2,
+    "duplicates": 0.2,
+    "extra": 0.5,
+    "missing": 1.0
+}
