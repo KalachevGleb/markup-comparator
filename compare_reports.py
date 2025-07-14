@@ -14,8 +14,8 @@ QUESTION_PATTERNS = [
     r"2[.)]\s*каковы ваши цели в этой ситуации",
     r"3[.)]\s*какие возможности и ограничения есть у вас при достижении цели",
     r"4[.)]\s*нужна ли вам в этой ситуации помощь \(поддержка\) окружающих людей",
-    r"5[.)]\s*если всё сложится очень плохо, то что это будет[?] \(максимальный неуспех\)",
-    r"6[.)]\s*опишите, что для вас будет максимально успешным выходом, разрешением ситуации\."
+    r"5[.)]\s*если вс[её] сложится очень плохо, то что это будет\??\s*\(максимальный неуспех\)",
+    r"6[.)]\s*опишите, что для вас будет максимально успешным выходом, разрешением ситуации\.?"
 ]
 
 
@@ -67,7 +67,7 @@ def format_text_mismatch_error(situation_title, block_num, ref_words, test_words
     sm = SequenceMatcher(None, ref_words, test_words)
     similarity = sm.ratio()
 
-    first_diff = next((i for i, (a, b) in enumerate(zip(ref_words, test_words)) if a != b), None)
+    first_diff = next((i for i, (a, b) in enumerate(zip(ref_words, test_words)) if a != b), min(len(ref_words), len(test_words)))
     #выводим 10 слов перед и после различия
     if first_diff is not None:
         start = max(0, first_diff - 5)
@@ -99,6 +99,16 @@ def map_eng(text):
     mapping = {k: v for k, v in zip(
         'АВСЕНКМОРТУХ',
         'ABCEHKMOPTYX')}
+    return ''.join([mapping.get(c, c) for c in text])
+
+
+def map_rus(text):
+    """
+    Заменяет латиницу на кириллицу в тексте, где написание букв одинаковое.
+    """
+    mapping = {k: v for k, v in zip(
+        'ABCEHKMOPTYX',
+        'АВСЕНКМОРТУХ')}
     return ''.join([mapping.get(c, c) for c in text])
 
 
@@ -363,10 +373,7 @@ def compare_markups(ref_text, test_text, ignore_text_errors=False, situation_tit
     return stats, cstats, wstats, errors, text_mismatch_errors
 
 
-def read_categories():
-    #with open('categories.json', 'r', encoding='utf-8') as f:
-    #    data = json.load(f)
-    data = [
+codes_description = [
     ["А", "ЭМОЦИИ"],
     ["A1", "Позитивные интенсивные"],
     ["A2", "Позитивные неинтенсивные"],
@@ -555,10 +562,28 @@ def read_categories():
     ["6B7", "Другое"],
     ["6C", "ДРУГОЕ (успех)"]
 ]
+
+
+def read_categories():
+    #with open('categories.json', 'r', encoding='utf-8') as f:
+    #    data = json.load(f)
+    data = codes_description
     categories = defaultdict(lambda: "Unknown code")
     for cat, d, *_ in data:
         categories['*' + map_eng(cat)] = d
     return categories
+
+
+def fix_codes_syntax(text):
+    codes = [x[0] for x in codes_description if len(x[0]) > 1]
+    codes = [map_eng(c) for c in codes] + [map_rus(c) for c in codes]
+    escaped_tokens = [re.escape(c) for c in codes]
+    pattern = (
+        r'(?<!(?:\*|[A-Za-z0-9А-Яа-яеЁ\.]))('
+        + '|'.join(escaped_tokens)
+        + r')(?![A-Za-z0-9А-Яа-яеЁ\.])'
+    )
+    return re.sub(pattern, r'*\1', text)
 
 
 categories_descr = read_categories()
@@ -673,7 +698,12 @@ def generate_html(test_text, stats, cstats, wstats, errors, normalize='total', e
         )
     html_parts.append('</table>')
     # 2) Разбить тестовый текст на 7 блоков
-    parts = split_by_questions(test_text)
+    try:
+        parts = split_by_questions(test_text)
+    except ValueError as e:
+        print(f"Test:\n-------------------\n {test_text}\n--------------------")
+        raise
+    
 
     # 3) Для каждого блока подготовить карту вставок и обёрток
     for qnum, block in enumerate(parts):
@@ -814,10 +844,15 @@ def generate_multi_situation_report(situations_dict, reference_dict, normalize='
             print(f"Предупреждение: '{title}' не найден в эталонных данных.")
             not_in_reference.append(title)
             continue
+        # Сравниваем с эталонной разметкой
         reference_text = reference_dict.get(title)
-        stats, cstats, wstats, errors, text_mismatch_errors = compare_markups(
-            reference_text, test_text, ignore_text_errors, title
-        )
+        try:
+            stats, cstats, wstats, errors, text_mismatch_errors = compare_markups(
+                reference_text, test_text, ignore_text_errors, title
+            )
+        except Exception as e:
+            print(f"Ошибка при сравнении '{title}': {e}")
+            continue
         
         # Выводим ошибки сопоставления текстов на экран
         if text_mismatch_errors and not ignore_text_errors:
@@ -1259,7 +1294,7 @@ def generate_multi_situation_report_text(situations_dict, reference_dict, ignore
     return table_str
 
 
-def read_situations_from_file(filename):
+def read_situations_from_file(filename, fix_codes=False):
     """
     Читает файл с множеством ситуаций и разбивает их на словарь.
     Каждая ситуация должна начинаться с заголовка формата "# <название> \n"
@@ -1268,6 +1303,9 @@ def read_situations_from_file(filename):
     """
     with open(filename, 'r', encoding='utf-8') as f:
         content = f.read()
+        if fix_codes:
+            # Добавляем пропущенные `*` перед кодами в тестируемой разметке
+            content = fix_codes_syntax(content)
 
     # Разбиваем файл на отдельные ситуации по заголовкам
     situations = re.split(r'(?=^# .*$)', content, flags=re.MULTILINE)
@@ -1289,6 +1327,8 @@ def read_situations_from_file(filename):
         match = re.match(r'^# (.*?)$', situation, flags=re.MULTILINE)
         if match:
             title = match.group(1).strip()
+            # Удаляем двойные пробелы
+            title = re.sub(r'\s+', ' ', title)
             if title in result:
                 # Обрабатываем дубликаты названий
                 i = 1
@@ -1377,6 +1417,12 @@ def main():
         action='store_true'
     )
 
+    parser.add_argument(
+        '--fix-codes',
+        help='Добавлять пропущенные `*` перед кодами в тестируемой разметке',
+        action='store_true'
+    )
+
     args = parser.parse_args()
 
     try:
@@ -1399,11 +1445,11 @@ def main():
 
     # Загрузка данных
     print(f"Загрузка эталонной разметки из файла: {args.reference}")
-    ref_text = read_situations_from_file(args.reference)
+    ref_text = read_situations_from_file(args.reference, fix_codes=args.fix_codes)
     print(f"Загружено {len(ref_text)} эталонных ситуаций")
 
     print(f"Загрузка тестируемой разметки из файла: {args.filename}")
-    test_text = read_situations_from_file(args.filename)
+    test_text = read_situations_from_file(args.filename, fix_codes=args.fix_codes)
     print(f"Загружено {len(test_text)} тестируемых ситуаций")
 
     normalize = {'total': 'total',
