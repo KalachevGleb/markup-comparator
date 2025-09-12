@@ -1423,6 +1423,19 @@ def main():
         action='store_true'
     )
 
+    # Новый режим экспорта в JSON
+    parser.add_argument(
+        '--json-only',
+        help='Сгенерировать только JSON-отчет и не генерировать HTML/текст',
+        action='store_true'
+    )
+    parser.add_argument(
+        '--json-output',
+        help='Путь для сохранения JSON-отчета',
+        default='report.json',
+        type=str
+    )
+
     args = parser.parse_args()
 
     try:
@@ -1456,6 +1469,21 @@ def main():
                  'ref': 'total_ref',
                  'test': 'total_test'}[args.normalize]
 
+    # Если выбран только JSON-режим — генерируем JSON и выходим
+    if args.json_only:
+        print("\nГенерация JSON-отчета...")
+        json_report = generate_multi_situation_report_json(
+            test_text,
+            ref_text,
+            efficiency_config=efficiency_config,
+            normalize=normalize,
+            ignore_text_errors=args.ignore_errors
+        )
+        with open(args.json_output, 'w', encoding='utf-8') as f:
+            json.dump(json_report, f, ensure_ascii=False, indent=2)
+        print(f"JSON-отчет сохранен в: {args.json_output}")
+        return 0
+
     # Генерация отчетов
     if args.text_only or args.both:
         print("\nГенерация текстового отчета:")
@@ -1471,6 +1499,131 @@ def main():
         print(f"HTML-отчет сохранен в: {args.output}")
 
     return 0
+
+
+def generate_multi_situation_report_json(situations_dict, reference_dict, normalize='total', efficiency_config=None, ignore_text_errors=False):
+    """
+    Строит JSON-отчет по множеству ситуаций.
+
+    :param situations_dict: словарь {название: разметка_ситуации}
+    :param reference_dict: словарь {название: эталонная_разметка}
+    :param normalize: ключ нормализации ('total' | 'total_ref' | 'total_test')
+    :param efficiency_config: словарь весов ошибок {'correct','misplaced','duplicates','extra','missing'}
+    :param ignore_text_errors: если False — включать сообщения о несоответствии текстов
+    :return: словарь, пригодный для сериализации в JSON
+    """
+    efficiency_config = efficiency_config or {}
+
+    correct_cost = efficiency_config.get('correct', 0.0)
+    misplaced_cost = efficiency_config.get('misplaced', 0.2)
+    duplicates_cost = efficiency_config.get('duplicates', 0.3)
+    extra_cost = efficiency_config.get('extra', 0.5)
+    missing_cost = efficiency_config.get('missing', 1.0)
+
+    def serialize_errors_per_block(errors_list):
+        # errors_list: список из 7 словарей (по блокам 0..6)
+        serialized_blocks = []
+        for block_errors in errors_list:
+            block_serialized = {}
+            for kind, items in block_errors.items():
+                out_items = []
+                for it in items:
+                    code = it.get('code')
+                    expected = it.get('expected', [])
+                    found = it.get('found', [])
+                    if isinstance(expected, set):
+                        expected = sorted(expected)
+                    if isinstance(found, set):
+                        found = sorted(found)
+                    out_items.append({'code': code, 'expected': expected, 'found': found})
+                block_serialized[kind] = out_items
+            serialized_blocks.append(block_serialized)
+        return serialized_blocks
+
+    situation_results = {}
+    all_stats = {}
+    all_cstats = {}
+    all_wstats = {}
+    all_text_errors = []
+    not_in_reference = []
+
+    for title, test_text in situations_dict.items():
+        if title not in reference_dict:
+            not_in_reference.append(title)
+            continue
+
+        reference_text = reference_dict.get(title)
+        try:
+            stats, cstats, wstats, errors, text_mismatch_errors = compare_markups(
+                reference_text, test_text, ignore_text_errors, title
+            )
+        except Exception as e:
+            situation_results[title] = {
+                'error': str(e)
+            }
+            continue
+
+        if text_mismatch_errors and not ignore_text_errors:
+            all_text_errors.extend(text_mismatch_errors)
+
+        errors_json = serialize_errors_per_block(errors)
+
+        case_error_cost = (
+            correct_cost * cstats.get('correct', 0)
+            + misplaced_cost * cstats.get('misplaced', 0)
+            + duplicates_cost * cstats.get('duplicates', 0)
+            + extra_cost * cstats.get('extra', 0)
+            + missing_cost * cstats.get('missing', 0)
+        )
+        case_total_ref = cstats.get('total_ref', 0) or 0
+        case_efficiency = 1 - case_error_cost / case_total_ref if case_total_ref > 0 else 0.0
+
+        situation_results[title] = {
+            'stats': stats,
+            'cstats': cstats,
+            'wstats': wstats,
+            'errors': errors_json,
+            'efficiency': case_efficiency
+        }
+
+        all_stats = add_dicts(all_stats, stats) if all_stats else stats.copy()
+        all_cstats = add_dicts(all_cstats, cstats) if all_cstats else cstats.copy()
+        all_wstats = add_dicts(all_wstats, wstats) if all_wstats else wstats.copy()
+
+    overall_error_cost = (
+        correct_cost * all_cstats.get('correct', 0)
+        + misplaced_cost * all_cstats.get('misplaced', 0)
+        + duplicates_cost * all_cstats.get('duplicates', 0)
+        + extra_cost * all_cstats.get('extra', 0)
+        + missing_cost * all_cstats.get('missing', 0)
+    ) if all_cstats else 0.0
+    overall_total_ref = all_cstats.get('total_ref', 0) if all_cstats else 0
+    overall_efficiency = 1 - overall_error_cost / overall_total_ref if overall_total_ref > 0 else 0.0
+
+    result = {
+        'normalize': normalize,
+        'costs': {
+            'correct': correct_cost,
+            'misplaced': misplaced_cost,
+            'duplicates': duplicates_cost,
+            'extra': extra_cost,
+            'missing': missing_cost
+        },
+        'overall': {
+            'stats': all_stats,
+            'cstats': all_cstats,
+            'wstats': all_wstats,
+            'efficiency': overall_efficiency
+        },
+        'situations': situation_results,
+        'not_in_reference': not_in_reference
+    }
+
+    if not ignore_text_errors:
+        result['text_mismatch_errors'] = all_text_errors
+        result['text_mismatch_errors_count'] = len(all_text_errors)
+
+    return result
 
 
 if __name__ == "__main__":

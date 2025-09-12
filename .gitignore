@@ -176,5 +176,6 @@ cython_debug/
 # generated files
 *.html
 *.txt
+report.*
 # Data files
 data/
