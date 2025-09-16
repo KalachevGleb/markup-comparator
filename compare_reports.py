@@ -341,7 +341,7 @@ def print_stats(stats, title="Statistics", format="10", normalize='total'):
     print(f"   {normalize[0].upper()}{normalize[1:]}:      {stats[normalize]:{format}}\n")
 
 
-def compare_markups(ref_text, test_text, ignore_text_errors=False, situation_title=""):
+def compare_markups(ref_text, test_text, ignore_text_errors=False, situation_title="", ignore_codes=None):
     stats = {}
     cstats = {}
     wstats = {}
@@ -352,6 +352,11 @@ def compare_markups(ref_text, test_text, ignore_text_errors=False, situation_tit
     test, test_blocks = parse_markup(test_text)
     ref_map = map_code_locations(ref)
     test_map = map_code_locations(test)
+    
+    # Фильтрация игнорируемых кодов (как будто их нет ни в эталоне, ни в тесте)
+    if ignore_codes:
+        ref_map = [{k: v for k, v in m.items() if k not in ignore_codes} for m in ref_map]
+        test_map = [{k: v for k, v in m.items() if k not in ignore_codes} for m in test_map]
     
     for block_num, (rr, tt, rb, tb) in enumerate(zip(ref_map, test_map, ref_blocks, test_blocks)):
         stats_, cstats_, wstats_, errors_, text_mismatch_info = compare_positions(rr, tt, rb, tb)
@@ -679,6 +684,11 @@ def generate_html(test_text, stats, cstats, wstats, errors, normalize='total', e
         'missing': 'Пропущенные',
         normalize: 'Всего'
     }
+
+    # Безопасное деление для процентов
+    def safe_div(a, b):
+        return a / b if b else 0
+
     for kind in ['correct', 'misplaced', 'duplicates', 'extra', 'missing', normalize]:
         extra = (kind == 'extra' or kind == 'duplicates') and normalize == 'total_ref'
         plus = '+' if extra else ''
@@ -687,13 +697,13 @@ def generate_html(test_text, stats, cstats, wstats, errors, normalize='total', e
             f"<tr><td>{ru_kind[kind]}</td>"
             + (
                 f"<td align='right'>{stats.get(kind, 0)}</td>"
-                f"<td align='right'{color}>{stats.get(kind, 0) / stats[normalize]:.1%}</td>"
+                f"<td align='right'{color}>{safe_div(stats.get(kind, 0), stats.get(normalize, 0)):.1%}</td>"
                 if normalize == 'total' else ''
             )
             + f"<td align='right'>{cstats.get(kind, 0)}</td>"
-            + f"<td align='right'{color}>{plus}{cstats.get(kind, 0) / cstats[normalize]:.1%}</td>"
+            + f"<td align='right'{color}>{plus}{safe_div(cstats.get(kind, 0), cstats.get(normalize, 0)):.1%}</td>"
             + f"<td align='right'>{wstats.get(kind, 0):.2f}</td>"
-            + f"<td align='right'{color}>{plus}{wstats.get(kind, 0) / wstats[normalize]:.1%}</td>"
+            + f"<td align='right'{color}>{plus}{safe_div(wstats.get(kind, 0), wstats.get(normalize, 0)):.1%}</td>"
             + f"</tr>"
         )
     html_parts.append('</table>')
@@ -723,7 +733,7 @@ def generate_html(test_text, stats, cstats, wstats, errors, normalize='total', e
         # карта: position → list of (code, class)
         insert_map = {}
         wrap_map = {}
-
+        
         # вспомогалка
         def add_to(m, pos, code, cls):
             m.setdefault(pos, []).append((code, cls))
@@ -821,7 +831,7 @@ def test():
             print(f'   {i}: ', e['code'], e['found'], "\t// ", cat_desc[e['code']])
 
 
-def generate_multi_situation_report(situations_dict, reference_dict, normalize='total', efficiency_config=None, ignore_text_errors=False):
+def generate_multi_situation_report(situations_dict, reference_dict, normalize='total', efficiency_config=None, ignore_text_errors=False, ignore_codes=None):
     """
     Создает HTML-отчет для нескольких ситуаций с общей сводкой и детализацией
 
@@ -848,7 +858,7 @@ def generate_multi_situation_report(situations_dict, reference_dict, normalize='
         reference_text = reference_dict.get(title)
         try:
             stats, cstats, wstats, errors, text_mismatch_errors = compare_markups(
-                reference_text, test_text, ignore_text_errors, title
+                reference_text, test_text, ignore_text_errors, title, ignore_codes
             )
         except Exception as e:
             print(f"Ошибка при сравнении '{title}': {e}")
@@ -1022,7 +1032,7 @@ def generate_multi_situation_report(situations_dict, reference_dict, normalize='
     missing_cost = efficiency_config.get('missing', 1.0)
     error_cost = correct_cost*all_cstats['correct'] + misplaced_cost*all_cstats['misplaced'] + \
         duplicates_cost*all_cstats['duplicates'] + extra_cost*all_cstats['extra'] + missing_cost*all_cstats['missing']
-    efficiency = 1 - error_cost/all_cstats['total_ref']
+    efficiency = 1 - error_cost/all_cstats['total_ref'] if all_cstats.get('total_ref', 0) > 0 else 1.0
     #print(f'{stat_types = }')
 
     for tab_id, (tab_name, stats) in stat_types.items():
@@ -1047,7 +1057,7 @@ def generate_multi_situation_report(situations_dict, reference_dict, normalize='
             value = stats.get(kind, 0)
             #print(f'{stats = }')
 
-            percent = value / stats[normalize] if stats[normalize] > 0 and kind != normalize else 1.0
+            percent = value / stats[normalize] if stats.get(normalize, 0) > 0 and kind != normalize else 1.0
 
             # Форматирование числовых значений
             if tab_id == 'weighted':
@@ -1113,7 +1123,8 @@ def generate_multi_situation_report(situations_dict, reference_dict, normalize='
             )
             efficiency = 1 - case_error_cost / ccstats['total_ref'] if ccstats['total_ref'] > 0 else 0
 
-            stats_percent = {k : v / stats[normalize] for k, v in stats.items() if k != normalize}
+            den = stats.get(normalize, 0)
+            stats_percent = {k: v / den for k, v in stats.items() if k != normalize} if den > 0 else {}
 
             extra = normalize == 'total_ref'
             plus = '+' if extra else ''
@@ -1190,7 +1201,7 @@ def generate_multi_situation_report(situations_dict, reference_dict, normalize='
     return "\n".join(html_parts)
 
 
-def generate_multi_situation_report_text(situations_dict, reference_dict, ignore_text_errors=False):
+def generate_multi_situation_report_text(situations_dict, reference_dict, ignore_text_errors=False, ignore_codes=None):
     """
     Создает HTML-отчет для нескольких ситуаций с общей сводкой и детализацией
 
@@ -1212,7 +1223,7 @@ def generate_multi_situation_report_text(situations_dict, reference_dict, ignore
             continue
         reference_text = reference_dict.get(title)
         stats, cstats, wstats, errors, text_mismatch_errors = compare_markups(
-            reference_text, test_text, ignore_text_errors=True, situation_title=title
+            reference_text, test_text, ignore_text_errors=True, situation_title=title, ignore_codes=ignore_codes
         )
         situation_results[title] = {
             'stats': stats,
@@ -1435,6 +1446,14 @@ def main():
         default='report.json',
         type=str
     )
+    
+    # Список кодов для игнорирования
+    parser.add_argument(
+        '--ignore',
+        help='Список кодов для игнорирования (через запятую), например: C1,C2',
+        default='',
+        type=str
+    )
 
     args = parser.parse_args()
 
@@ -1469,6 +1488,18 @@ def main():
                  'ref': 'total_ref',
                  'test': 'total_test'}[args.normalize]
 
+    # Разбор списка игнорируемых кодов
+    ignore_codes = set()
+    if args.ignore:
+        tokens = re.split(r'[\,\s]+', args.ignore.strip())
+        for token in tokens:
+            if not token:
+                continue
+            code = map_eng(token.strip())
+            if not code.startswith('*'):
+                code = '*' + code
+            ignore_codes.add(code)
+
     # Если выбран только JSON-режим — генерируем JSON и выходим
     if args.json_only:
         print("\nГенерация JSON-отчета...")
@@ -1477,7 +1508,8 @@ def main():
             ref_text,
             efficiency_config=efficiency_config,
             normalize=normalize,
-            ignore_text_errors=args.ignore_errors
+            ignore_text_errors=args.ignore_errors,
+            ignore_codes=ignore_codes
         )
         with open(args.json_output, 'w', encoding='utf-8') as f:
             json.dump(json_report, f, ensure_ascii=False, indent=2)
@@ -1487,13 +1519,13 @@ def main():
     # Генерация отчетов
     if args.text_only or args.both:
         print("\nГенерация текстового отчета:")
-        text_report = generate_multi_situation_report_text(test_text, ref_text, args.ignore_errors)
+        text_report = generate_multi_situation_report_text(test_text, ref_text, args.ignore_errors, ignore_codes)
         print(text_report)
 
     if not args.text_only or args.both:
         print("\nГенерация HTML-отчета...")
         html_report = generate_multi_situation_report(test_text, ref_text, efficiency_config=efficiency_config,
-                                                      normalize=normalize, ignore_text_errors=args.ignore_errors)
+                                                      normalize=normalize, ignore_text_errors=args.ignore_errors, ignore_codes=ignore_codes)
         with open(args.output, 'w', encoding='utf-8') as f:
             f.write(html_report)
         print(f"HTML-отчет сохранен в: {args.output}")
@@ -1501,7 +1533,7 @@ def main():
     return 0
 
 
-def generate_multi_situation_report_json(situations_dict, reference_dict, normalize='total', efficiency_config=None, ignore_text_errors=False):
+def generate_multi_situation_report_json(situations_dict, reference_dict, normalize='total', efficiency_config=None, ignore_text_errors=False, ignore_codes=None):
     """
     Строит JSON-отчет по множеству ситуаций.
 
@@ -1555,7 +1587,7 @@ def generate_multi_situation_report_json(situations_dict, reference_dict, normal
         reference_text = reference_dict.get(title)
         try:
             stats, cstats, wstats, errors, text_mismatch_errors = compare_markups(
-                reference_text, test_text, ignore_text_errors, title
+                reference_text, test_text, ignore_text_errors, title, ignore_codes
             )
         except Exception as e:
             situation_results[title] = {
